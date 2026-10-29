@@ -23,7 +23,7 @@ PRODUCT_ID = "jags-ship-radar"
 
 # Hard-coded on purpose: a tampered config.json must not be able to point the
 # updater elsewhere. "latest/download" serves the newest published release's files.
-GITHUB_REPO = "JoeGund/jags-ship-radar"
+GITHUB_REPO = "Jag754/jags-ship-radar"
 UPDATE_BASE_URL = f"https://github.com/{GITHUB_REPO}/releases/latest/download"
 # GitHub redirects release downloads to its file storage; these are the only
 # hosts the updater will follow a redirect to.
