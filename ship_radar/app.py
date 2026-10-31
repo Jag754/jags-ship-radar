@@ -315,6 +315,9 @@ class App:
         self.enabled = not self.enabled
         if not self.enabled:
             self.batcher = make_batcher(self.cfg)
+        elif not self.overlay.placer:
+            # A fresh window always shows over the game, so Off then On fixes alerts gone missing.
+            self.overlay.apply(self.cfg)
         self.tray.set_enabled(self.enabled)
         self.overlay.show("on" if self.enabled else "off", "Jag's Ship Radar",
                           f"Alerts {'ON' if self.enabled else 'OFF'}", seconds=2.5)

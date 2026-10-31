@@ -15,9 +15,10 @@ WS_EX_LAYERED = 0x80000
 WS_EX_TRANSPARENT = 0x20
 WS_EX_TOOLWINDOW = 0x80
 WS_EX_NOACTIVATE = 0x8000000
-WS_EX_TOPMOST = 0x8
 HWND_TOPMOST = -1
+HWND_NOTOPMOST = -2
 SWP_FLAGS = 0x1 | 0x2 | 0x10  # no size | no move | no activate
+SW_HIDE, SW_SHOWNOACTIVATE = 0, 4
 
 KEY = "#010203"  # painted fully transparent
 BG = "#10151c"
@@ -54,7 +55,54 @@ def make_passive(hwnd):
     after them and again each time the window is shown."""
     style = _u32.GetWindowLongW(hwnd, GWL_EXSTYLE)
     _u32.SetWindowLongW(hwnd, GWL_EXSTYLE,
-                        style | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST)
+                        style | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)
+
+
+def bring_to_top(hwnd):
+    """Put the window back on top of every always-on-top window, without taking focus.
+
+    After Alt+Tab back into the game, the game can sit above us, and asking for HWND_TOPMOST
+    again doesn't move a window that's already topmost. Dropping out of the topmost band and
+    back in re-inserts it at the very top."""
+    _u32.SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_FLAGS)
+    _u32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FLAGS)
+
+
+def reshow(hwnd):
+    """Hide and show the window again, without taking focus, so Windows draws it over the game again."""
+    _u32.ShowWindow(hwnd, SW_HIDE)
+    _u32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+    bring_to_top(hwnd)
+
+
+class TopKeeper:
+    """Keeps a window over the game. When another window comes to the front (checked twice a
+    second), e.g. Alt+Tab back into the game, the window is shown again; every few seconds it's
+    put back on top regardless."""
+
+    POLL_MS, EVERY = 500, 6
+
+    def __init__(self, widget, hwnd_fn):
+        self.widget, self.hwnd_fn = widget, hwnd_fn
+        self.fg, self.n = None, 0
+        self._tick()
+
+    def _tick(self):
+        try:
+            if not self.widget.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        fg = _u32.GetForegroundWindow()
+        self.n += 1
+        if fg != self.fg:
+            self.fg, self.n = fg, 0
+            if self.widget.winfo_viewable():
+                reshow(self.hwnd_fn())
+        elif self.n >= self.EVERY:
+            self.n = 0
+            bring_to_top(self.hwnd_fn())
+        self.widget.after(self.POLL_MS, self._tick)
 
 
 def corner_placement(x, y, w, h, sw, sh, dpi):
@@ -116,12 +164,7 @@ class Overlay:
         w.update_idletasks()
         self.hwnd = _u32.GetParent(w.winfo_id())
         make_passive(self.hwnd)
-        self._keep_on_top()
-
-    def _keep_on_top(self):
-        # Some games push themselves above other topmost windows; re-assert quietly.
-        _u32.SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FLAGS)
-        self.root.after(3000, self._keep_on_top)
+        TopKeeper(w, lambda: self.hwnd)
 
     def card(self, parent, scale, kind, tag, title, subtitle="", lines=()):
         """One alert card at `scale` (the user's size setting), not yet packed."""
@@ -161,7 +204,7 @@ class Overlay:
             self.toasts.pop(0).destroy()
         secs = seconds if seconds is not None else float(self.cfg.get("toast_seconds", 7))
         self.root.after(int(secs * 1000), lambda: self._remove(card))
-        _u32.SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FLAGS)
+        bring_to_top(self.hwnd)
 
     def sample(self, parent, scale, s):
         """Stand-in cards for the move/resize window."""

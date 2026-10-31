@@ -9,7 +9,7 @@ import tkinter as tk
 from dataclasses import dataclass
 from datetime import datetime
 
-from .overlay import ACCENTS, BG, FG, HWND_TOPMOST, MUTED, SWP_FLAGS, Placer, _u32, make_passive
+from .overlay import ACCENTS, BG, FG, MUTED, Placer, TopKeeper, _u32, make_passive
 
 PRIORITY_FG = "#ff6b6b"
 MAX_ROWS = 15
@@ -133,6 +133,7 @@ class NearbyPanel:
         w.update_idletasks()
         self.hwnd = _u32.GetParent(w.winfo_id())
         make_passive(self.hwnd)
+        TopKeeper(w, lambda: self.hwnd)
         self._tick()
 
     def set_visible(self, on):
@@ -148,8 +149,6 @@ class NearbyPanel:
         if not self.win:
             return
         self._render()
-        # Some games push themselves above other topmost windows; re-assert quietly.
-        _u32.SetWindowPos(self.hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FLAGS)
         self.win.after(REFRESH_MS, self._tick)
 
     def _render(self, force=False):
