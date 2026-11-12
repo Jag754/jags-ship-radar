@@ -60,6 +60,7 @@ class Tray:
             pystray.MenuItem(lambda _: f"Install update v{app.update_manifest.version}" if app.update_manifest else "",
                              lambda: p(app.install_update), visible=lambda _: app.update_manifest is not None),
             pystray.MenuItem("Check for updates", lambda: p(app.check_updates)),
+            pystray.MenuItem("Send problem report…", lambda: p(app.send_report)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(lambda _: f"Watching: {app.log_label()}", None, enabled=False),
             pystray.MenuItem("Choose Game.log…", lambda: p(app.choose_log)),

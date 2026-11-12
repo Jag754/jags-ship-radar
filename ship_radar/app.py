@@ -10,7 +10,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from tkinter import filedialog
 
-from . import __version__, config, gamewatch, logfind
+from . import __version__, config, gamewatch, logfind, report
 from .hotkey import Hotkey
 from .nearby import NearbyPanel, RecentShips
 from .overlay import ago, local_time, Overlay
@@ -20,6 +20,7 @@ from .speech import group_line, Speech
 from .tailer import LogTailer
 from .tracker import Batcher, Tracker
 from .tray import Tray
+from .watchdog import Watchdog
 
 log = logging.getLogger(__name__)
 PRIORITY_COLOR = "#ff6b6b"
@@ -36,8 +37,9 @@ def make_batcher(cfg):
 
 
 class App:
-    def __init__(self, cfg, replay=None, speed=20.0):
+    def __init__(self, cfg, replay=None, speed=20.0, crash_file=None):
         self.cfg = cfg
+        self.watchdog = Watchdog(crash_file)
         self.q = queue.Queue()
         self.root = tk.Tk()
         self.root.withdraw()
@@ -64,6 +66,8 @@ class App:
         self.hotkey = None
         self.nearby_hotkey = None
         self.picker = None
+        self.report_window = None
+        self.report_reason = "manual"
         # A replay has no game to wait for.
         self.game_running = bool(replay)
         self.source = None
@@ -75,6 +79,7 @@ class App:
         self.q.put((fn, args))
 
     def _pump(self):
+        self.watchdog.beat()
         deadline = time.monotonic() + 0.03
         while time.monotonic() < deadline:
             try:
@@ -93,6 +98,8 @@ class App:
     # ---- lifecycle ----------------------------------------------------------
 
     def run(self):
+        self.watchdog.beat()
+        self.watchdog.start()
         self.tray.start()
         self.nearby.apply(self.cfg)
         if not self.replay:
@@ -104,6 +111,13 @@ class App:
         when = "" if self.game_running else " while Star Citizen is running"
         self.overlay.show("on", "Jag's Ship Radar running", f"Alerts {'ON' if self.enabled else 'OFF'}",
                           f"{self.cfg['hotkey'].upper()} turns alerts on and off{when}", seconds=4)
+        trouble = None if self.replay else report.last_run_trouble()
+        if trouble:
+            self.report_reason = trouble
+            log.warning("crash.log shows the radar %s last time", "froze" if trouble == "after-freeze" else "crashed")
+            self.overlay.show("warn", "Jag's Ship Radar",
+                              f"The radar {'froze' if trouble == 'after-freeze' else 'crashed'} last time",
+                              "Tray icon → Send problem report, so Jag can fix it", seconds=12)
         if not self.replay and self.cfg.get("check_for_updates", True):
             self.root.after(FIRST_UPDATE_CHECK_MS, self._scheduled_update_check)
         self.root.mainloop()
@@ -219,7 +233,7 @@ class App:
         self.quit()
 
     def quit(self):
-        for part in (self.source, self.hotkey, self.nearby_hotkey, self.tray):
+        for part in (self.source, self.hotkey, self.nearby_hotkey, self.tray, self.watchdog):
             try:
                 part and part.stop()
             except Exception:
@@ -385,6 +399,17 @@ class App:
                               seconds=4)
         self._sync_hotkey()
         self.tray.refresh()
+
+    def send_report(self):
+        if self.report_window:
+            self.report_window.win.lift()
+            return
+
+        def closed():
+            self.report_window = None
+            self.report_reason = "manual"
+        self.report_window = report.ReportWindow(self.root, self.cfg, self.report_reason, self.tracker.handle,
+                                                 self.post, closed)
 
     def toggle_nearby(self):
         self.cfg["nearby_list"] = not self.cfg["nearby_list"]

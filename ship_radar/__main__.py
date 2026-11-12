@@ -2,9 +2,12 @@
 
 import argparse
 import ctypes
+import faulthandler
 import logging
 import logging.handlers
+import os
 import sys
+import time
 
 from . import __version__, config
 
@@ -15,7 +18,26 @@ def _setup_logging(console):
                                                      backupCount=2, encoding="utf-8")]
     if console and sys.stderr:
         handlers.append(logging.StreamHandler())
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", handlers=handlers)
+    # force: if anything set up logging before us, ours still wins (otherwise basicConfig quietly does
+    # nothing and the file is never written).
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+                        handlers=handlers, force=True)
+
+
+def _crash_log():
+    """crash.log gets Python's own report if the app dies hard, and the watchdog's stacks if it freezes."""
+    try:
+        f = open(config.CONFIG_DIR / "crash.log", "a", encoding="utf-8")
+        if f.tell() > 1_000_000:
+            f.close()
+            f = open(config.CONFIG_DIR / "crash.log", "w", encoding="utf-8")
+        faulthandler.enable(file=f, all_threads=True)
+        # Written through its own handle, so it shows up even if app.log doesn't.
+        f.write(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} Jag's Ship Radar {__version__} started, pid {os.getpid()} ---\n")
+        f.flush()
+        return f
+    except OSError:
+        return None
 
 
 def _single_instance():
@@ -86,7 +108,7 @@ def main():
 
     from .app import App
     logging.getLogger(__name__).info("Jag's Ship Radar %s starting", __version__)
-    App(cfg, replay=args.replay, speed=args.speed).run()
+    App(cfg, replay=args.replay, speed=args.speed, crash_file=_crash_log()).run()
 
 
 if __name__ == "__main__":

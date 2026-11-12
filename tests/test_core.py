@@ -217,6 +217,106 @@ class SpeechTests(unittest.TestCase):
             s.say("hello")  # no voice, no error
 
 
+class WatchdogTests(unittest.TestCase):
+    def test_reports_a_frozen_ui_once(self):
+        from ship_radar.watchdog import Watchdog
+        now = [0.0]
+        with tempfile.TemporaryFile("w+", encoding="utf-8") as f:
+            dog = Watchdog(f, stall_after=15, clock=lambda: now[0])
+            now[0] = 10.0
+            dog.check()
+            self.assertEqual(f.tell(), 0)
+            now[0] = 20.0
+            with self.assertLogs("ship_radar.watchdog", "ERROR"):
+                dog.check()
+            size = f.tell()
+            f.seek(0)
+            self.assertIn("test_reports_a_frozen_ui_once", f.read())  # the stuck thread's stack
+            dog.check()
+            self.assertEqual(f.tell(), size)  # once per freeze
+            dog.beat()
+            with self.assertLogs("ship_radar.watchdog", "WARNING"):
+                dog.check()
+
+
+class ReportTests(unittest.TestCase):
+    def setUp(self):
+        from pathlib import Path
+        from ship_radar import report
+        self.report = report
+        self.dir = Path(tempfile.mkdtemp())
+
+    def test_tail_and_redact(self):
+        log = self.dir / "app.log"
+        log.write_bytes("".join(f"line {i}\n" for i in range(1000)).encode())
+        t = self.report.tail(log, 100)
+        self.assertTrue(t.startswith("line ") and t.endswith("line 999\n"))
+        self.assertLessEqual(len(t), 100)
+        self.assertEqual(self.report.tail(self.dir / "missing.log", 100), "")
+        env = {"USERPROFILE": r"C:\Users\Fireb", "USERNAME": "fireb"}
+        self.assertEqual(self.report.redact(r"C:\users\fireb\x fireb CaptnJoe", "CaptnJoe", env),
+                         r"%USERPROFILE%\x <user> <handle>")
+
+    def test_build_takes_only_safe_settings(self):
+        (self.dir / "app.log").write_text("hello from the log\n", encoding="utf-8")
+        (self.dir / "crash.log").write_text("Thread 0x1\n", encoding="utf-8")
+        cfg = {**config.DEFAULTS, "log_path": r"D:\secret\Game.log"}
+        r = self.report.build(cfg, "  froze  ", "after-freeze", folder=self.dir)
+        self.assertEqual((r["note"], r["reason"]), ("froze", "after-freeze"))
+        self.assertNotIn("log_path", r["settings"])
+        self.assertIn("hello from the log", r["app_log"])
+        self.assertIn("Thread 0x1", r["crash_log"])
+        self.assertIn("hello from the log", self.report.preview(r))
+
+    def test_send(self):
+        import io
+        import json
+        import urllib.error
+        sent = []
+
+        class Resp(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def ok(req, timeout):
+            sent.append(req)
+            return Resp(b'{"ok": true, "id": "x"}')
+
+        def limited(req, timeout):
+            raise urllib.error.HTTPError(req.full_url, 429, "", {}, io.BytesIO(b'{"error": "Too many reports"}'))
+
+        def offline(req, timeout):
+            raise urllib.error.URLError("no network")
+        self.assertEqual(self.report.send({"version": "1"}, opener=ok), (True, "Sent. Thanks!"))
+        self.assertEqual(json.loads(sent[0].data), {"version": "1"})
+        self.assertEqual(sent[0].full_url, self.report.REPORT_URL)
+        self.assertTrue(sent[0].get_header("User-agent").startswith("Jags-ShipRadar-report/"))
+        self.assertEqual(self.report.send({}, opener=limited), (False, "Too many reports"))
+        sent_ok, msg = self.report.send({}, opener=offline)
+        self.assertFalse(sent_ok)
+        self.assertIn("no network", msg)
+
+    def test_last_run_trouble(self):
+        crash, state = self.dir / "crash.log", self.dir / "state.json"
+
+        def check():
+            return self.report.last_run_trouble(self.dir, state)
+        self.assertIsNone(check())  # first run: just remembers where it is
+        with open(crash, "a", encoding="utf-8") as f:
+            f.write("--- started ---\n")
+        self.assertIsNone(check())  # a start marker is not trouble
+        with open(crash, "a", encoding="utf-8") as f:
+            f.write("--- 2026-11-12 UI thread stalled 16s ---\nThread 0x1\n")
+        self.assertEqual(check(), "after-freeze")
+        self.assertIsNone(check())  # reported once
+        with open(crash, "a", encoding="utf-8") as f:
+            f.write("Fatal Python error: PyEval_RestoreThread\n")
+        self.assertEqual(check(), "after-crash")
+
+
 class NearbyTests(unittest.TestCase):
     def test_list_groups_ages_out_and_sorts(self):
         from ship_radar.nearby import RecentShips
